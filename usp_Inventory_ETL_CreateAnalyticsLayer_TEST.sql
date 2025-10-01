@@ -7,11 +7,12 @@ use [Test Inventory]
 
 GO
 
+
 -- =============================================
 -- SCHEMA PREPARATION
 -- =============================================
 
--- Rename column for consistency
+-- Rename column if needed
 IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.inventory_test_with_issues') AND name = 'InvID')
 BEGIN
     EXEC sp_rename 'inventory_test_with_issues.InvID', 'OrderID', 'COLUMN';
@@ -51,13 +52,6 @@ SELECT
     SUM(CASE WHEN OrderDate IS NULL THEN 1 ELSE 0 END) AS Bad_OrderDate
 FROM dbo.inventory_test_with_issues;
 GO
-
--- Check for duplicates in the data based on orderID
-SELECT 
-    OrderID, COUNT(*) AS cnt
-    FROM [dbo].[inventory_test_with_issues]
-    GROUP BY OrderID
-    HAVING COUNT(*) > 1;
 
 -- =============================================
 -- HIERARCHICAL NULL IMPUTATION
@@ -124,7 +118,6 @@ GO
 -- STATISTICAL OUTLIER HANDLING
 -- =============================================
 
-
 -- Calculate IQR-based bounds for outlier detection
 WITH Stats AS (
     SELECT DISTINCT
@@ -183,11 +176,12 @@ GO
 -- ANALYTICS LAYER CREATION
 -- =============================================
 
--- Create product dimension table with pre-aggregated metrics
+-- Create product dimension table with corrected stock status logic
 IF OBJECT_ID('analytics.DimProduct', 'U') IS NOT NULL
     DROP TABLE analytics.DimProduct;
 GO
 
+-- Recreate with corrected logic
 SELECT 
     p.ProductID,
     p.ProductName,
@@ -195,19 +189,28 @@ SELECT
     p.Supplier,
     p.CostPrice,
     p.UnitPrice,
-    -- Inventory metrics
     COUNT(i.OrderID) AS TotalOrders,
     SUM(i.Demand) AS TotalDemand,
     SUM(i.Availability) AS TotalAvailability,
     AVG(i.Demand) AS AvgDemand,
     AVG(i.Availability) AS AvgAvailability,
-    -- Financial metrics
     SUM(i.Demand * p.UnitPrice) AS PotentialRevenue,
     SUM(i.Availability * p.CostPrice) AS InventoryValue,
-    -- Status flags
-    CASE WHEN SUM(i.Availability) > 0 THEN 1 ELSE 0 END AS HasStock,
-    CASE WHEN SUM(i.Availability) < SUM(i.Demand) THEN 1 ELSE 0 END AS Understocked,
-    -- Date range
+    -- Calculate availability ratio
+    SUM(i.Availability) * 100.0 / NULLIF(SUM(i.Demand), 1) AS AvailabilityRatio,
+    -- Create HasStock using a more explicit approach
+    CASE 
+        WHEN SUM(i.Demand) = 0 THEN 1  -- No demand, consider as having stock
+        WHEN SUM(i.Availability) = 0 THEN 0  -- No availability, out of stock
+        WHEN (SUM(i.Availability) * 100.0 / SUM(i.Demand)) > 30 THEN 1  -- More than 30% ratio
+        ELSE 0  -- 30% or less ratio
+    END AS HasStock,
+    -- Understocked flag
+    CASE 
+        WHEN SUM(i.Demand) = 0 THEN 0  -- No demand, not understocked
+        WHEN (SUM(i.Availability) * 100.0 / SUM(i.Demand)) < 30 THEN 1  -- Less than 30% ratio
+        ELSE 0  -- 30% or more ratio
+    END AS Understocked,
     MIN(i.OrderDate) AS FirstOrderDate,
     MAX(i.OrderDate) AS LastOrderDate
 INTO analytics.DimProduct
@@ -218,6 +221,55 @@ GROUP BY
     p.ProductID, p.ProductName, p.Category, 
     p.Supplier, p.CostPrice, p.UnitPrice;
 GO
+------------------------------------------------------------------------
+-- Check HasStock distribution
+SELECT 
+    HasStock,
+    COUNT(*) AS ProductCount,
+    MIN(AvailabilityRatio) AS MinRatio,
+    MAX(AvailabilityRatio) AS MaxRatio,
+    AVG(AvailabilityRatio) AS AvgRatio
+FROM analytics.DimProduct
+GROUP BY HasStock;
+
+-- Check the distribution by AvailabilityRatio
+SELECT 
+    CASE 
+        WHEN AvailabilityRatio = 0 THEN 'Out of Stock'
+        WHEN AvailabilityRatio < 10 THEN 'Critical'
+        WHEN AvailabilityRatio < 30 THEN 'Low'
+        WHEN AvailabilityRatio < 70 THEN 'Adequate'
+        ELSE 'Overstocked'
+    END AS StockCategory,
+    COUNT(*) AS ProductCount,
+    MIN(AvailabilityRatio) AS MinRatio,
+    MAX(AvailabilityRatio) AS MaxRatio,
+    AVG(AvailabilityRatio) AS AvgRatio
+FROM analytics.DimProduct
+GROUP BY 
+    CASE 
+        WHEN AvailabilityRatio = 0 THEN 'Out of Stock'
+        WHEN AvailabilityRatio < 10 THEN 'Critical'
+        WHEN AvailabilityRatio < 30 THEN 'Low'
+        WHEN AvailabilityRatio < 70 THEN 'Adequate'
+        ELSE 'Overstocked'
+    END;
+
+-- Show sample data with HasStock
+SELECT TOP 10 
+    ProductID,
+    ProductName,
+    TotalAvailability,
+    TotalDemand,
+    AvailabilityRatio,
+    HasStock,
+    Understocked
+FROM analytics.DimProduct
+ORDER BY AvailabilityRatio;
+------------------------------------------------------------------------
+
+
+
 
 -- Create time-based aggregation table
 IF OBJECT_ID('analytics.DailyInventory', 'U') IS NOT NULL
@@ -237,7 +289,7 @@ FROM dbo.inventory_test_with_issues
 GROUP BY CAST(OrderDate AS DATE), ProductID;
 GO
 
--- Create warehouse-level aggregation table
+-- Create warehouse-level aggregation table with ProductID for relationships
 IF OBJECT_ID('analytics.WarehouseMetrics', 'U') IS NOT NULL
     DROP TABLE analytics.WarehouseMetrics;
 GO
@@ -253,9 +305,9 @@ SELECT
     MIN(OrderDate) AS EarliestOrder,
     MAX(OrderDate) AS LatestOrder
 INTO analytics.WarehouseMetrics
-FROM inventory_test_with_issues
+FROM dbo.inventory_test_with_issues
 GROUP BY WarehouseLocation, ProductID;
-
+GO
 
 -- =============================================
 -- FINAL VALIDATION
@@ -299,16 +351,40 @@ SELECT COUNT(*) AS OrphanedRecords
 FROM dbo.inventory_test_with_issues i
 LEFT JOIN dbo.products_table p ON i.ProductID = p.ProductID
 WHERE p.ProductID IS NULL;
+
+-- Check stock status distribution
+SELECT 
+    CASE 
+        WHEN AvailabilityRatio = 0 THEN 'Out of Stock'
+        WHEN AvailabilityRatio < 10 THEN 'Critical'
+        WHEN AvailabilityRatio < 30 THEN 'Low'
+        WHEN AvailabilityRatio < 70 THEN 'Adequate'
+        ELSE 'Overstocked'
+    END AS StockStatus,
+    COUNT(*) AS ProductCount,
+    AVG(PotentialRevenue) AS AvgPotentialRevenue
+FROM analytics.DimProduct
+GROUP BY 
+    CASE 
+        WHEN AvailabilityRatio = 0 THEN 'Out of Stock'
+        WHEN AvailabilityRatio < 10 THEN 'Critical'
+        WHEN AvailabilityRatio < 30 THEN 'Low'
+        WHEN AvailabilityRatio < 70 THEN 'Adequate'
+        ELSE 'Overstocked'
+    END;
 GO
 
 -- =============================================
---PERFORMANCE OPTIMIZATION
+-- PERFORMANCE OPTIMIZATION
 -- =============================================
 
 -- Create indexes for analytics tables
 CREATE INDEX IX_DimProduct_ProductID ON analytics.DimProduct(ProductID);
 CREATE INDEX IX_DimProduct_Category ON analytics.DimProduct(Category);
+CREATE INDEX IX_DimProduct_HasStock ON analytics.DimProduct(HasStock);
+CREATE INDEX IX_DimProduct_AvailabilityRatio ON analytics.DimProduct(AvailabilityRatio);
 CREATE INDEX IX_DailyInventory_DateProduct ON analytics.DailyInventory(InventoryDate, ProductID);
+CREATE INDEX IX_WarehouseMetrics_LocationProduct ON analytics.WarehouseMetrics(WarehouseLocation, ProductID);
 CREATE INDEX IX_WarehouseMetrics_Location ON analytics.WarehouseMetrics(WarehouseLocation);
 GO
 
@@ -319,21 +395,21 @@ GO
 -- Add table descriptions
 EXEC sp_addextendedproperty 
     @name = N'MS_Description',
-    @value = N'Product dimension with pre-aggregated inventory metrics',
+    @value = N'Product dimension with pre-aggregated inventory metrics and stock status indicators',
     @level0type = N'Schema', @level0name = 'analytics',
     @level1type = N'Table',  @level1name = 'DimProduct';
 GO
 
 EXEC sp_addextendedproperty 
     @name = N'MS_Description',
-    @value = N'Daily inventory metrics by product',
+    @value = N'Daily inventory metrics by product for time series analysis',
     @level0type = N'Schema', @level0name = 'analytics',
     @level1type = N'Table',  @level1name = 'DailyInventory';
 GO
 
 EXEC sp_addextendedproperty 
     @name = N'MS_Description',
-    @value = N'Warehouse-level inventory metrics',
+    @value = N'Warehouse-level inventory metrics with product granularity for location-based analysis',
     @level0type = N'Schema', @level0name = 'analytics',
     @level1type = N'Table',  @level1name = 'WarehouseMetrics';
 GO
@@ -343,4 +419,5 @@ GO
 -- =============================================
 PRINT 'Data cleaning and analytics layer creation completed successfully.';
 PRINT 'Ready for Power BI connection to analytics schema tables.';
+PRINT 'Stock status calculation now uses availability ratio for more accurate classification.';
 GO
