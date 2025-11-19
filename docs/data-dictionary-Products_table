@@ -1,1 +1,31 @@
 
+# Retail-Data-Pipeline-MSSQL-MySQL-PowerBI: Products_table data dictionary
+
+## Dataset Overview
+
+Volume: 100 rows
+Source: Generated using Python 
+Primary Use-case: Serves as reference/master product data for the inventory management system. This table contains core product attributes that are linked to inventory records to support inventory tracking, pricing analysis, and warehouse management. The data is used in Power BI dashboards to visualize product distribution, pricing strategies, and supplier performance metrics.
+
+### *Table Overview*
+| Column Name |Data Type|Description & Business Significance
+
+ProductID | String | Unique Product Identifier | Serves as Primary Key
+
+Product Name | String | Name of the Product | Identifies the product
+
+Category | String | Category of the Product | Clubs similar products in same category
+
+Supplier | String | Name of the Product Supplier | Identifies the Product Supplier
+
+Cost Price | Float | The cost price of the product | Helps understand Profit/Loss 
+
+Unit Price | Float | The sale price of the product | Helps understand Profit/Loss 
+
+Warehouse Location | String | The location of the Warehouse | Helps with inventory analysis
+
+
+## Relationships
+This products table serves as a dimension table that connects to the inventory fact tables via ProductID
+Each product in this table can have multiple corresponding records in the inventory datasets
+Used in Power BI to establish relationships between product information and inventory transactions
