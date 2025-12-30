@@ -14,7 +14,7 @@ CostPrice
 UnitPrice
 WarehouseLocation
 
-## 3. Inventory Dataset Creation
+## Inventory Dataset Creation
 Developed separate inventory datasets for:
 Test environment: 50,000 records
 Production environment: 5,000 records
@@ -24,7 +24,7 @@ Intentionally injected data quality issues to simulate real-world scenarios:
 5% null values across various fields
 Exported datasets to CSV format for downstream processing
 
-## 4. Data Cleaning & Validation
+## Data Cleaning & Validation
 Utilized SQL Server Management Studio (SSMS) to implement comprehensive data cleaning:
 Data profiling and quality assessment
 Duplicate identification and removal
@@ -33,7 +33,7 @@ Null value imputation strategies
 Data validation against business rules
 Documented all cleaning procedures for reproducibility
 
-## 5. Business Intelligence & Reporting
+## Business Intelligence & Reporting
 Designed and developed interactive Power BI dashboards using cleaned test data
 Created visualizations highlighting key inventory metrics and insights
 Implemented the same SQL cleaning procedures on production data
